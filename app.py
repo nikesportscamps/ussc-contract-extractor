@@ -5,11 +5,8 @@ import pdfplumber
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 
-# ─────────────────────────────────────────────
-# Page config
-# ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="USSC Contract Extractor",
+    page_title="USSC Operator Agreement Extractor",
     page_icon="📋",
     layout="centered"
 )
@@ -34,17 +31,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# Known USSC signers — add more as needed
+# Known USSC signers — matched by email too
 # ─────────────────────────────────────────────
 USSC_SIGNERS = [
-    "Nora Osei", "Olivia Bowman", "Sarah Hebberd", "Tim Phelan",
-    "Terrence Trammell", "Luke Gromer", "William Phelan",
-    "Andrew Harrington", "Jessica Warren"
+    ("Nora Osei", ["nosei", "nora.osei", "noraosei"]),
+    ("Olivia Bowman", ["obowman", "olivia.bowman", "oliviabowman"]),
+    ("Sarah Hebberd", ["shebberd", "sarah.hebberd"]),
+    ("Tim Phelan", ["tphelan", "tim.phelan"]),
+    ("Terrence Trammell", ["ttrammell", "terrence.trammell"]),
+    ("Luke Gromer", ["lgromer", "luke.gromer"]),
+    ("William Phelan", ["wphelan", "william.phelan"]),
+    ("Andrew Harrington", ["aharrington", "andrew.harrington"]),
 ]
 
-# ─────────────────────────────────────────────
-# Text helpers
-# ─────────────────────────────────────────────
 def clean(text):
     if not text:
         return ""
@@ -62,40 +61,39 @@ def collapse_spaced(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
+def collapse_newline_spaced(text):
+    """
+    Fix names broken across newlines like:
+    'O\n_\nl\n_\ni\n_\nv\n_\ni\n_\na' -> 'Olivia'
+    """
+    # Remove underscores
+    text = re.sub(r'_', '', text)
+    # Collapse single chars separated by newlines: "O\nl\ni\nv\ni\na" -> "Olivia"
+    text = re.sub(r'(?<!\w)([A-Za-z]\n)+[A-Za-z](?!\w)', lambda m: m.group(0).replace('\n', ''), text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
 def extract_all_dates(text):
     collapsed = collapse_spaced(text)
-    # Only return values that look like real dates (not SSNs or phone numbers)
     candidates = re.findall(r'\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}', collapsed)
     valid = []
     for c in candidates:
         parts = re.split(r'[\/\-]', c)
-        # A real date: month 1-12, day 1-31, year 2-4 digits
         if len(parts) == 3:
             try:
                 month = int(parts[0])
                 day = int(parts[1])
-                year = int(parts[2])
-                if 1 <= month <= 12 and 1 <= day <= 31 and (year > 100 or year < 100):
+                year_raw = int(parts[2])
+                year = year_raw if year_raw > 100 else 2000 + year_raw
+                if 1 <= month <= 12 and 1 <= day <= 31 and 2015 <= year <= 2035:
                     valid.append(c)
             except:
                 pass
     return valid
 
-# ─────────────────────────────────────────────
-# Contract type detection
-# ─────────────────────────────────────────────
 def detect_contract_type(pages_text, full_text):
-    """
-    Entity: has insurance paragraph with Commercial General Liability / $1,000,000
-    Individual with Entity Payment: no insurance paragraph, but signature page
-        has two operator name lines (person name + LLC name) and page 1 mentions
-        both a person AND an LLC/Entity
-    Individual: no insurance paragraph, single operator name
-    """
-    # Check for Entity: insurance paragraph
     insurance_signals = [
         "Commercial General Liability",
-        "1,000,000",
         "additional insureds",
         "employer's liability insurance",
         "business automobile liability"
@@ -104,36 +102,21 @@ def detect_contract_type(pages_text, full_text):
     if insurance_count >= 2:
         return "Entity"
 
-    # Check for Individual with Entity Payment:
-    # Page 1 mentions both a person name and an LLC/Entity name in opening paragraph
-    page1 = pages_text[0] if pages_text else ""
-    
-    # Look for "Entity" keyword in opening paragraph
     entity_signals = [
-        '"Entity"',
-        '("Entity")',
-        'collectively, "Operator"',
-        'collectively "Operator"',
+        '"Entity"', '("Entity")', 'collectively, "Operator"', 'collectively "Operator"',
     ]
     has_entity_keyword = any(s.lower() in full_text[:3000].lower() for s in entity_signals)
-    
-    # Also check signature page for two operator name lines
+
     sig_text = find_signature_page(pages_text)
-    collapsed_sig = collapse_spaced(sig_text)
-    
-    # Look for LLC in operator block (before U.S. Sports Camps)
     ussc_pos = sig_text.find('U.S. Sports Camps') if sig_text else -1
     operator_block = sig_text[:ussc_pos] if ussc_pos > 0 else sig_text
-    has_llc_in_sig = bool(re.search(r'\bLLC\b|\bInc\b|\bCorp\b|\bAthletics\b', operator_block, re.IGNORECASE))
-    
+    has_llc_in_sig = bool(re.search(r'\bLLC\b|\bInc\b|\bCorp\b', operator_block, re.IGNORECASE))
+
     if has_entity_keyword or has_llc_in_sig:
         return "Individual with Entity Payment"
 
     return "Individual"
 
-# ─────────────────────────────────────────────
-# Header name extraction
-# ─────────────────────────────────────────────
 def extract_header_name(pages):
     if not pages:
         return "NOT FOUND"
@@ -143,26 +126,19 @@ def extract_header_name(pages):
         if year_pattern.match(line):
             if i > 0:
                 candidate = lines[i-1]
-                if 'DocuSign' not in candidate and 'Envelope' not in candidate and 'Docusign' not in candidate:
+                if not any(x in candidate for x in ['DocuSign', 'Envelope', 'Docusign']):
                     return clean(candidate)
-    # fallback: skip DocuSign lines and return first real line
     for line in lines:
-        if 'DocuSign' not in line and 'Envelope' not in line and 'Docusign' not in line:
+        if not any(x in line for x in ['DocuSign', 'Envelope', 'Docusign']):
             return clean(line)
     return "NOT FOUND"
 
-# ─────────────────────────────────────────────
-# Expiration date
-# ─────────────────────────────────────────────
 def extract_expiration_date(full_text):
     m = re.search(r'shall continue until\s+(December 31,\s*20\d{2})', full_text, re.IGNORECASE)
     if m:
         return clean(m.group(1))
     return "NOT FOUND"
 
-# ─────────────────────────────────────────────
-# Find signature page
-# ─────────────────────────────────────────────
 def find_signature_page(pages):
     for text in pages:
         if text and 'EXECUTED by the parties' in text:
@@ -172,52 +148,67 @@ def find_signature_page(pages):
             return text
     return ""
 
-# ─────────────────────────────────────────────
-# Signature field extraction
-# ─────────────────────────────────────────────
+def find_ussc_signer(sig_text):
+    """
+    Try multiple strategies to find the USSC signer name:
+    1. Match known email prefixes (most reliable)
+    2. Match known names in collapsed text
+    3. Match known names in newline-collapsed text
+    4. Fallback: last Name: occurrence
+    """
+    # Strategy 1: email prefix match (most reliable — email is never broken up)
+    for name, email_hints in USSC_SIGNERS:
+        for hint in email_hints:
+            if hint.lower() in sig_text.lower():
+                return name
+
+    # Strategy 2: known name in collapsed text
+    collapsed = collapse_spaced(sig_text)
+    for name, _ in USSC_SIGNERS:
+        if name in collapsed:
+            return name
+
+    # Strategy 3: known name after fixing newline-broken chars
+    newline_fixed = collapse_newline_spaced(sig_text)
+    for name, _ in USSC_SIGNERS:
+        if name in newline_fixed:
+            return name
+
+    # Strategy 4: last Name: occurrence in collapsed text
+    parts = re.split(r'Name:', collapsed)
+    if len(parts) >= 2:
+        last_part = parts[-1].strip()
+        words = last_part.split()
+        name_words = []
+        for w in words:
+            if re.match(r'^[A-Za-zÀ-ÿ\-]+$', w):
+                name_words.append(w)
+            else:
+                break
+            if len(name_words) == 2:
+                break
+        if name_words:
+            candidate = ' '.join(name_words)
+            skip = ['Director', 'Senior', 'Growth', 'Running', 'Sports',
+                    'Camps', 'Owner', 'Title', 'Address', 'Email']
+            if candidate not in skip and not any(s == candidate for s in skip):
+                return candidate
+
+    return "NOT FOUND"
+
 def extract_signature_fields(pages):
     operator_date = "NOT FOUND"
-    ussc_name = "NOT FOUND"
     ussc_date = "NOT FOUND"
 
     sig_text = find_signature_page(pages)
     if not sig_text:
-        return operator_date, ussc_name, ussc_date
+        return "NOT FOUND", "NOT FOUND", "NOT FOUND"
 
-    collapsed_full = collapse_spaced(sig_text)
-    lines = sig_text.split('\n')
-    collapsed_lines = [collapse_spaced(l) for l in lines]
+    ussc_name = find_ussc_signer(sig_text)
 
-    # ── USSC signer: check known signers first ──
-    for signer in USSC_SIGNERS:
-        if signer in collapsed_full:
-            ussc_name = signer
-            break
+    collapsed_lines = [collapse_spaced(l) for l in sig_text.split('\n')]
 
-    # Fallback: last Name: occurrence after collapsing
-    if ussc_name == "NOT FOUND":
-        parts = re.split(r'Name:', collapsed_full)
-        if len(parts) >= 2:
-            last_part = parts[-1].strip()
-            words = last_part.split()
-            name_words = []
-            for w in words:
-                if re.match(r'^[A-Za-zÀ-ÿ\-]+$', w):
-                    name_words.append(w)
-                else:
-                    break
-                if len(name_words) == 2:
-                    break
-            if name_words and len(' '.join(name_words)) > 3:
-                candidate = ' '.join(name_words)
-                # Make sure it's not a label word
-                skip_words = ['Director', 'Senior', 'Growth', 'Running', 'Sports', 'Camps']
-                if not any(s == candidate for s in skip_words):
-                    ussc_name = candidate
-
-    # ── Dates ──
     for collapsed in collapsed_lines:
-        # Lines with Date: label
         if re.search(r'\bDate:', collapsed):
             dates = extract_all_dates(collapsed)
             if len(dates) >= 2:
@@ -230,8 +221,6 @@ def extract_signature_fields(pages):
                     operator_date = dates[0]
                 elif ussc_date == "NOT FOUND":
                     ussc_date = dates[0]
-
-        # Lines with two dates but no Date: label (some contract formats)
         elif operator_date == "NOT FOUND" or ussc_date == "NOT FOUND":
             dates = extract_all_dates(collapsed)
             if len(dates) >= 2:
@@ -240,26 +229,13 @@ def extract_signature_fields(pages):
                 if ussc_date == "NOT FOUND":
                     ussc_date = dates[1]
             elif len(dates) == 1:
-                # Only assign standalone date if it looks like a signing date
-                # (year between 2018-2030, not a phone/SSN)
-                d = dates[0]
-                parts = re.split(r'[\/\-]', d)
-                if len(parts) == 3:
-                    try:
-                        yr = int(parts[2])
-                        if yr >= 2018 or (yr >= 18 and yr <= 30):
-                            if operator_date == "NOT FOUND":
-                                operator_date = d
-                            elif ussc_date == "NOT FOUND":
-                                ussc_date = d
-                    except:
-                        pass
+                if operator_date == "NOT FOUND":
+                    operator_date = dates[0]
+                elif ussc_date == "NOT FOUND":
+                    ussc_date = dates[0]
 
     return operator_date, ussc_name, ussc_date
 
-# ─────────────────────────────────────────────
-# Process single PDF
-# ─────────────────────────────────────────────
 def process_pdf_bytes(file_bytes, filename):
     try:
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
@@ -287,9 +263,6 @@ def process_pdf_bytes(file_bytes, filename):
             "Contract Expiration Date": "",
         }
 
-# ─────────────────────────────────────────────
-# Build Excel
-# ─────────────────────────────────────────────
 def build_excel(data):
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -299,8 +272,6 @@ def build_excel(data):
         "Date Operator Signed", "USSC Signer Name",
         "Date USSC Signed", "Contract Expiration Date"
     ]
-
-    # Header styling
     header_fill = PatternFill("solid", fgColor="1F3864")
     header_font = Font(color="FFFFFF", bold=True)
     for col_num, header in enumerate(headers, 1):
@@ -309,11 +280,10 @@ def build_excel(data):
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    # Contract type colors
     type_colors = {
-        "Entity": "FFF3CD",               # soft amber
-        "Individual with Entity Payment": "D1ECF1",  # soft blue
-        "Individual": "D4EDDA",           # soft green
+        "Entity": "FFF3CD",
+        "Individual with Entity Payment": "D1ECF1",
+        "Individual": "D4EDDA",
     }
 
     for row_num, record in enumerate(data, 2):
@@ -324,7 +294,6 @@ def build_excel(data):
             cell.alignment = Alignment(vertical="center")
             cell.fill = PatternFill("solid", fgColor=row_color)
 
-    # Auto-fit columns
     for col in ws.columns:
         max_len = 0
         col_letter = col[0].column_letter
@@ -337,7 +306,6 @@ def build_excel(data):
         ws.column_dimensions[col_letter].width = min(max_len + 4, 55)
 
     ws.freeze_panes = "A2"
-
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
@@ -346,8 +314,8 @@ def build_excel(data):
 # ─────────────────────────────────────────────
 # UI
 # ─────────────────────────────────────────────
-st.markdown("# 📋 USSC Contract Extractor")
-st.markdown('<p class="subtitle">Upload your Nike Sports Camp operator agreements and download a clean Excel summary in seconds.</p>', unsafe_allow_html=True)
+st.markdown("# 📋 USSC Operator Agreement Extractor")
+st.markdown('<p class="subtitle">Upload up to 100 US Sports Camps Operator Agreements to pull the pertinent information from each contract in a simple, downloadable Excel sheet. It\'ll be done before you can spell "supercalifragilisticexpialidocious" ;)</p>', unsafe_allow_html=True)
 
 st.markdown("""
 <div class="info-box">
@@ -388,7 +356,7 @@ if uploaded_files:
         st.markdown(f"""
         <div class="result-box">
             🎉 Done! <strong>{len(results)} contract{"s" if len(results) != 1 else ""}</strong> processed successfully.
-            <br><small>Rows are color-coded by contract type: 🟡 Entity &nbsp; 🔵 Individual with Entity Payment &nbsp; 🟢 Individual</small>
+            <br><small>Rows are color-coded by contract type: 🟡 Entity &nbsp;·&nbsp; 🔵 Individual with Entity Payment &nbsp;·&nbsp; 🟢 Individual</small>
         </div>
         """, unsafe_allow_html=True)
 
@@ -406,4 +374,4 @@ else:
     """, unsafe_allow_html=True)
 
 st.markdown("---")
-st.markdown('<p style="text-align:center; color:#9ca3af; font-size:0.8rem;">US Sports Camps · Nike Sports Camps · Contract Data Tool</p>', unsafe_allow_html=True)
+st.markdown('<p style="text-align:center; color:#9ca3af; font-size:0.8rem;">Created By: Dr. Nora Osei &nbsp;·&nbsp; 2026 &nbsp;·&nbsp; US Sports Camps &nbsp;·&nbsp; Nike Sports Camps</p>', unsafe_allow_html=True)
