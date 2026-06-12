@@ -315,7 +315,7 @@ def build_excel(data):
 # UI
 # ─────────────────────────────────────────────
 st.markdown("# 📋 USSC Operator Agreement Extractor")
-st.markdown('<p class="subtitle">Upload up to 100 US Sports Camps Operator Agreements to pull the pertinent information from each contract in a simple, downloadable Excel sheet. It\'ll be done before you can say "supercalifragilisticexpialidocious" 20 times ;)</p>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Upload up to 50 US Sports Camps Operator Agreements to pull the pertinent information from each contract in a simple, downloadable Excel sheet. It\'ll be done before you can say "supercalifragilisticexpialidocious" 20 times ;)</p>', unsafe_allow_html=True)
 
 st.markdown("""
 <div class="info-box">
